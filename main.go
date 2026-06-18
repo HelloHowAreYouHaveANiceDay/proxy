@@ -21,10 +21,16 @@ func main() {
 		emit(map[string]any{"ok": true, "result": map[string]string{"version": version}})
 	case "describe":
 		emit(map[string]any{"ok": true, "result": describe()})
-	case "doctor":
-		emit(map[string]any{"ok": true, "result": map[string]any{"version": version, "checks": []any{}}})
 	case "serve":
 		runServe(os.Args[2:])
+	case "connect":
+		runConnect(os.Args[2:])
+	case "status":
+		runStatus(os.Args[2:])
+	case "whoami":
+		runWhoami()
+	case "doctor":
+		runDoctor()
 	default:
 		fail("unknown-method", fmt.Sprintf("verb %q not implemented yet (see SPEC.md)", os.Args[1]))
 	}
@@ -68,14 +74,22 @@ func runServe(args []string) {
 	}
 
 	addr := fmt.Sprintf("127.0.0.1:%d", cfg.Port)
+	proxyURL := fmt.Sprintf("http://%s", addr)
+	caPath := cfg.DataDir + "/ca.crt"
 	p := newProxy(cfg, ca)
+
+	// Write bim-cli instance discovery file; clean up on exit
+	if err := writeDiscovery(proxyURL, caPath); err != nil {
+		fail("discovery", fmt.Sprintf("failed to write discovery file: %v", err))
+	}
+	defer removeDiscovery()
 
 	// Print discovery JSON for bim-cli and scripts to parse
 	emit(map[string]any{
 		"ok": true,
 		"result": map[string]any{
-			"proxy": fmt.Sprintf("http://%s", addr),
-			"ca":    cfg.DataDir + "/ca.crt",
+			"proxy": proxyURL,
+			"ca":    caPath,
 			"pid":   os.Getpid(),
 		},
 	})
@@ -93,7 +107,7 @@ func describe() map[string]any {
 		"kind":    "bridge",
 		"version": version,
 		"verbs":   []string{"init", "wire", "connect", "status", "describe", "doctor", "revoke", "rotate-key", "whoami", "serve", "grant"},
-		"notes":   []string{"Phase 1 skeleton — verbs not yet implemented. See SPEC.md."},
+		"notes":   []string{"Phase 1: proxy + driver face implemented. init/wire/grant/revoke planned Phase 2."},
 	}
 }
 
