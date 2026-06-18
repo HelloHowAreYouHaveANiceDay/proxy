@@ -11,7 +11,9 @@ import (
 type ProxyConfig struct {
 	ControlURL     string `json:"control_url"`      // OAUTHR_CONTROL_URL
 	InternalSecret string `json:"internal_secret"`  // OAUTHR_INTERNAL_SECRET
-	PrincipalID    string `json:"principal_id"`     // OAUTHR_PRINCIPAL_ID
+	ProxyToken     string `json:"proxy_token"`      // OAUTHR_PROXY_TOKEN (Phase 2: agent leash)
+	PrincipalID    string `json:"principal_id"`     // OAUTHR_PRINCIPAL_ID (Phase 1 backward compat)
+	AgentID        string `json:"agent_id"`         // OAUTHR_AGENT_ID (informational)
 	Port           int    `json:"port"`             // default 8080
 	DataDir        string `json:"data_dir"`         // default ~/.oauthr
 }
@@ -38,8 +40,14 @@ func loadConfig() ProxyConfig {
 	if v := os.Getenv("OAUTHR_INTERNAL_SECRET"); v != "" {
 		cfg.InternalSecret = v
 	}
+	if v := os.Getenv("OAUTHR_PROXY_TOKEN"); v != "" {
+		cfg.ProxyToken = v
+	}
 	if v := os.Getenv("OAUTHR_PRINCIPAL_ID"); v != "" {
 		cfg.PrincipalID = v
+	}
+	if v := os.Getenv("OAUTHR_AGENT_ID"); v != "" {
+		cfg.AgentID = v
 	}
 
 	return cfg

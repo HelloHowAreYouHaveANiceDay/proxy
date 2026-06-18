@@ -241,12 +241,15 @@ func (p *Proxy) getToken(service, label string) (string, error) {
 	}
 	p.mu.Unlock()
 
-	// Fetch from control plane
-	body, _ := json.Marshal(map[string]string{
-		"principal_id": p.cfg.PrincipalID,
-		"service":      service,
-		"label":        label,
-	})
+	// Fetch from control plane.
+	// Phase 2: prefer proxy_token (agent leash); fall back to principal_id for backward compat.
+	tokenReqBody := map[string]string{"service": service, "label": label}
+	if p.cfg.ProxyToken != "" {
+		tokenReqBody["proxy_token"] = p.cfg.ProxyToken
+	} else {
+		tokenReqBody["principal_id"] = p.cfg.PrincipalID
+	}
+	body, _ := json.Marshal(tokenReqBody)
 	req, err := http.NewRequest(http.MethodPost, p.cfg.ControlURL+"/v1/internal/token", bytes.NewReader(body))
 	if err != nil {
 		return "", err
