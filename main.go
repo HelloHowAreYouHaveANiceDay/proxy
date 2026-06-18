@@ -10,17 +10,29 @@ import (
 	"os"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 func main() {
 	if len(os.Args) < 2 {
-		fail("usage", "oauthr <verb> (serve|describe|doctor|version|...)")
+		fail("usage", "oauthr <verb> (init|serve|connect|status|whoami|principal|describe|doctor|version|...)")
 	}
 	switch os.Args[1] {
 	case "version":
 		emit(map[string]any{"ok": true, "result": map[string]string{"version": version}})
 	case "describe":
 		emit(map[string]any{"ok": true, "result": describe()})
+	case "init":
+		runInit(os.Args[2:])
+	case "principal":
+		if len(os.Args) < 3 {
+			fail("usage", "oauthr principal <sub-verb> (token)")
+		}
+		switch os.Args[2] {
+		case "token":
+			runPrincipalToken(os.Args[3:])
+		default:
+			fail("unknown-method", fmt.Sprintf("principal sub-verb %q not implemented (see SPEC.md)", os.Args[2]))
+		}
 	case "serve":
 		runServe(os.Args[2:])
 	case "connect":
@@ -106,8 +118,8 @@ func describe() map[string]any {
 		"name":    "oauthr",
 		"kind":    "bridge",
 		"version": version,
-		"verbs":   []string{"init", "wire", "connect", "status", "describe", "doctor", "revoke", "rotate-key", "whoami", "serve", "grant"},
-		"notes":   []string{"Phase 1: proxy + driver face implemented. init/wire/grant/revoke planned Phase 2."},
+		"verbs":   []string{"init", "principal", "connect", "status", "whoami", "serve", "describe", "doctor", "version"},
+		"notes":   []string{"Phase 2: two-tier join tokens (init, principal token). Phase 3: wire/grant/revoke/rotate-key."},
 	}
 }
 

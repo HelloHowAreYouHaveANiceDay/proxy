@@ -256,12 +256,13 @@ func runStatus(args []string) {
 // runWhoami implements `oauthr whoami`.
 func runWhoami() {
 	cfg := loadConfig()
-	if cfg.PrincipalID == "" {
-		fail("not-enrolled", "no principal_id configured; run `oauthr init` first")
+	if cfg.AgentID == "" && cfg.PrincipalID == "" {
+		fail("not-enrolled", "not enrolled; run `oauthr init` first")
 	}
 	emit(map[string]any{
 		"ok": true,
 		"result": map[string]any{
+			"agent_id":     cfg.AgentID,
 			"principal_id": cfg.PrincipalID,
 			"control_url":  cfg.ControlURL,
 		},
