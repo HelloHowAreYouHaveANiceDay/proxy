@@ -14,35 +14,29 @@ import (
 	"time"
 )
 
-// serviceMatch maps a hostname to a service name.
+// servicePattern maps a hostname pattern to a service name.
 // Pattern matching: exact or wildcard prefix (*.googleapis.com).
-var builtinServicePatterns = []struct {
+type servicePattern struct {
 	pattern string
 	service string
-}{
+}
+
+var builtinServicePatterns = []servicePattern{
 	{"*.googleapis.com", "google"},
 	{"oauth2.googleapis.com", "google"},
 	{"accounts.google.com", "google"},
 }
 
-func matchService(host string) string {
-	// strip port
-	h := host
-	if idx := strings.LastIndex(h, ":"); idx != -1 {
-		h = h[:idx]
+func matchPattern(pattern, host string) bool {
+	if pattern == host {
+		return true
 	}
-	for _, p := range builtinServicePatterns {
-		if p.pattern == h {
-			return p.service
-		}
-		if strings.HasPrefix(p.pattern, "*.") {
-			suffix := p.pattern[1:] // ".googleapis.com"
-			if strings.HasSuffix(h, suffix) {
-				return p.service
-			}
+	if strings.HasPrefix(pattern, "*.") {
+		if strings.HasSuffix(host, pattern[1:]) {
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
 // tokenEntry is a cached token with expiry.
@@ -53,15 +47,47 @@ type tokenEntry struct {
 
 // Proxy is the injecting MITM proxy.
 type Proxy struct {
-	cfg ProxyConfig
-	ca  *CA
+	cfg          ProxyConfig
+	ca           *CA
+	extraPatterns []servicePattern // additional host→service mappings (used in tests)
+	// dialUpstream dials the real upstream TLS connection. Defaults to tls.DialWithDialer;
+	// tests override this to accept self-signed mock-server certs.
+	dialUpstream func(network, addr string, cfg *tls.Config) (net.Conn, error)
 
 	mu     sync.Mutex
 	tokens map[string]tokenEntry // key: "service/label"
 }
 
 func newProxy(cfg ProxyConfig, ca *CA) *Proxy {
-	return &Proxy{cfg: cfg, ca: ca, tokens: make(map[string]tokenEntry)}
+	return &Proxy{
+		cfg:          cfg,
+		ca:           ca,
+		tokens:       make(map[string]tokenEntry),
+		dialUpstream: defaultDialUpstream,
+	}
+}
+
+func defaultDialUpstream(network, addr string, cfg *tls.Config) (net.Conn, error) {
+	return tls.DialWithDialer(&net.Dialer{Timeout: 15 * time.Second}, network, addr, cfg)
+}
+
+// matchService maps host (with optional port) to a service name.
+func (p *Proxy) matchService(host string) string {
+	h := host
+	if idx := strings.LastIndex(h, ":"); idx != -1 {
+		h = h[:idx]
+	}
+	for _, sp := range p.extraPatterns {
+		if matchPattern(sp.pattern, h) {
+			return sp.service
+		}
+	}
+	for _, sp := range builtinServicePatterns {
+		if matchPattern(sp.pattern, h) {
+			return sp.service
+		}
+	}
+	return ""
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +121,7 @@ func (p *Proxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 		hostname = hostname[:idx]
 	}
 
-	service := matchService(host)
+	service := p.matchService(host)
 	if service == "" {
 		// Unknown host — pass through unmodified (raw TCP tunnel to upstream)
 		p.rawTunnel(conn, host)
@@ -151,7 +177,7 @@ func (p *Proxy) handlePlainHTTP(w http.ResponseWriter, r *http.Request) {
 		host = r.URL.Host
 	}
 
-	service := matchService(host)
+	service := p.matchService(host)
 	label := extractLabel(r)
 
 	if service != "" {
@@ -283,11 +309,7 @@ func (p *Proxy) forwardRequest(req *http.Request, host string) (*http.Response, 
 	req.Header.Del("Proxy-Connection")
 	req.RequestURI = ""
 
-	upConn, err := tls.DialWithDialer(
-		&net.Dialer{Timeout: 15 * time.Second},
-		"tcp", host,
-		&tls.Config{ServerName: req.URL.Hostname()},
-	)
+	upConn, err := p.dialUpstream("tcp", host, &tls.Config{ServerName: req.URL.Hostname()})
 	if err != nil {
 		return nil, err
 	}
