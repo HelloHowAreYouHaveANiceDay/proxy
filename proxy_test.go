@@ -91,6 +91,52 @@ func TestGetTokenControlPlaneError(t *testing.T) {
 	}
 }
 
+// TestMatchServiceBuiltin verifies that builtin patterns cover all registered providers,
+// including wildcard patterns for variable-host providers (Salesforce, Shopify).
+func TestMatchServiceBuiltin(t *testing.T) {
+	p := newProxy(ProxyConfig{}, nil)
+	cases := []struct {
+		host    string
+		service string
+	}{
+		// Google
+		{"www.googleapis.com:443", "google"},
+		{"oauth2.googleapis.com:443", "google"},
+		{"accounts.google.com:443", "google"},
+		// Dropbox
+		{"api.dropboxapi.com:443", "dropbox"},
+		// Box
+		{"api.box.com:443", "box"},
+		// Salesforce (variable per-org instance_url -- wildcard covers all orgs)
+		{"myorg.salesforce.com:443", "salesforce"},
+		{"myorg.my.salesforce.com:443", "salesforce"},
+		{"sandbox.salesforce.com:443", "salesforce"},
+		// HubSpot
+		{"api.hubapi.com:443", "hubspot"},
+		// Stripe
+		{"api.stripe.com:443", "stripe"},
+		// Discord
+		{"discord.com:443", "discord"},
+		// Zoom
+		{"api.zoom.us:443", "zoom"},
+		// X (Twitter)
+		{"api.twitter.com:443", "x"},
+		// Figma
+		{"api.figma.com:443", "figma"},
+		// Shopify (variable per-merchant shop domain -- wildcard covers all shops)
+		{"myshop.myshopify.com:443", "shopify"},
+		{"another-store.myshopify.com:443", "shopify"},
+		// Unknown host -- should return empty string (pass-through)
+		{"unknown.example.com:443", ""},
+	}
+	for _, tc := range cases {
+		got := p.matchService(tc.host)
+		if got != tc.service {
+			t.Errorf("matchService(%q) = %q, want %q", tc.host, got, tc.service)
+		}
+	}
+}
+
 // TestExtractLabel verifies that Proxy-Authorization: Basic base64(label:) correctly
 // extracts the label. This is the format sent by HTTP clients that use
 // HTTPS_PROXY=http://label:@proxy:port (nanoclaw drop-in swap pattern).

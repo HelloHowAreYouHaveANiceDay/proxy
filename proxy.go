@@ -22,9 +22,30 @@ type servicePattern struct {
 }
 
 var builtinServicePatterns = []servicePattern{
+	// Google
 	{"*.googleapis.com", "google"},
 	{"oauth2.googleapis.com", "google"},
 	{"accounts.google.com", "google"},
+	// Dropbox
+	{"api.dropboxapi.com", "dropbox"},
+	// Box
+	{"api.box.com", "box"},
+	// Salesforce -- instance_url is per-org (*.salesforce.com covers all orgs and sandboxes)
+	{"*.salesforce.com", "salesforce"},
+	// HubSpot
+	{"api.hubapi.com", "hubspot"},
+	// Stripe Connect
+	{"api.stripe.com", "stripe"},
+	// Discord
+	{"discord.com", "discord"},
+	// Zoom
+	{"api.zoom.us", "zoom"},
+	// X (Twitter)
+	{"api.twitter.com", "x"},
+	// Figma
+	{"api.figma.com", "figma"},
+	// Shopify -- shop domain is per-merchant (*.myshopify.com covers all shops)
+	{"*.myshopify.com", "shopify"},
 }
 
 func matchPattern(pattern, host string) bool {
