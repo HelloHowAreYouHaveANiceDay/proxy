@@ -264,12 +264,10 @@ func (p *Proxy) getToken(service, label string) (string, error) {
 	defer resp.Body.Close()
 
 	var result struct {
-		OK     bool `json:"ok"`
-		Result struct {
-			AccessToken string `json:"access_token"`
-			ExpiresAt   int64  `json:"expires_at"`
-		} `json:"result"`
-		Error struct {
+		OK          bool   `json:"ok"`
+		AccessToken string `json:"access_token"`
+		ExpiresAt   int64  `json:"expires_at"`
+		Error       struct {
 			Kind    string `json:"kind"`
 			Message string `json:"message"`
 		} `json:"error"`
@@ -283,12 +281,12 @@ func (p *Proxy) getToken(service, label string) (string, error) {
 
 	p.mu.Lock()
 	p.tokens[key] = tokenEntry{
-		accessToken: result.Result.AccessToken,
-		expiresAt:   result.Result.ExpiresAt,
+		accessToken: result.AccessToken,
+		expiresAt:   result.ExpiresAt,
 	}
 	p.mu.Unlock()
 
-	return result.Result.AccessToken, nil
+	return result.AccessToken, nil
 }
 
 // extractLabel reads the label from Proxy-Authorization (Basic scheme, username = label).
@@ -306,7 +304,21 @@ func extractLabel(r *http.Request) string {
 	return "default"
 }
 
+// connBody wraps a response body and closes the underlying connection once the body is closed,
+// keeping the connection alive until the full response has been streamed to the client.
+type connBody struct {
+	io.ReadCloser
+	conn net.Conn
+}
+
+func (c *connBody) Close() error {
+	err := c.ReadCloser.Close()
+	c.conn.Close()
+	return err
+}
+
 // forwardRequest sends req to the real upstream (over TLS for HTTPS hosts).
+// The returned response body owns upConn; closing the body also closes the connection.
 func (p *Proxy) forwardRequest(req *http.Request, host string) (*http.Response, error) {
 	req.Header.Del("Proxy-Authorization")
 	req.Header.Del("Proxy-Connection")
@@ -316,10 +328,16 @@ func (p *Proxy) forwardRequest(req *http.Request, host string) (*http.Response, 
 	if err != nil {
 		return nil, err
 	}
-	defer upConn.Close()
 
 	if err := req.Write(upConn); err != nil {
+		upConn.Close()
 		return nil, err
 	}
-	return http.ReadResponse(bufio.NewReader(upConn), req)
+	resp, err := http.ReadResponse(bufio.NewReader(upConn), req)
+	if err != nil {
+		upConn.Close()
+		return nil, err
+	}
+	resp.Body = &connBody{ReadCloser: resp.Body, conn: upConn}
+	return resp, nil
 }

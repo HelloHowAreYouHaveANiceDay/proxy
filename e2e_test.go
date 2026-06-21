@@ -317,12 +317,11 @@ func (c *mockCtrl) handleInternalToken(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(resp.Body).Decode(&tokens)
 
 	expiresAt := time.Now().Unix() + int64(tokens.ExpiresIn)
+	// flat envelope -- matches the deployed Worker's actual response shape
 	c.jsonOK(w, map[string]any{
-		"ok": true,
-		"result": map[string]any{
-			"access_token": tokens.AccessToken,
-			"expires_at":   expiresAt,
-		},
+		"ok":           true,
+		"access_token": tokens.AccessToken,
+		"expires_at":   expiresAt,
 	}, http.StatusOK)
 }
 
