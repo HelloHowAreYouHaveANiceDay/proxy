@@ -54,7 +54,14 @@ func runServe(args []string) {
 	principal := fs.String("principal", "", "principal_id (overrides config/env)")
 	control := fs.String("control", "", "control plane URL (overrides config/env)")
 	secret := fs.String("secret", "", "internal secret (overrides config/env)")
+	hardened := fs.Bool("hardened", false, "run in hardened mode: proxy must run as the dedicated oauthr-proxy system user (Unix only; see --help)")
 	_ = fs.Parse(args)
+
+	if *hardened {
+		if ok, msg := hardenedContextOK(); !ok {
+			fail("hardened", msg)
+		}
+	}
 
 	cfg := loadConfig()
 	if *port != 0 {
@@ -119,7 +126,7 @@ func describe() map[string]any {
 		"kind":    "bridge",
 		"version": version,
 		"verbs":   []string{"init", "principal", "connect", "status", "whoami", "serve", "describe", "doctor", "version"},
-		"notes":   []string{"Phase 2: two-tier join tokens (init, principal token). Phase 3: wire/grant/revoke/rotate-key."},
+		"notes":   []string{"Phase 2: two-tier join tokens (init, principal token). Phase 3: --hardened (Unix separate-uid proxy isolation), wire/grant/revoke/rotate-key."},
 	}
 }
 
