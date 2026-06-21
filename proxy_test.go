@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -86,5 +88,40 @@ func TestGetTokenControlPlaneError(t *testing.T) {
 	_, err := p.getToken("google", "default")
 	if err == nil {
 		t.Fatal("expected error from not-ok response, got nil")
+	}
+}
+
+// TestExtractLabel verifies that Proxy-Authorization: Basic base64(label:) correctly
+// extracts the label. This is the format sent by HTTP clients that use
+// HTTPS_PROXY=http://label:@proxy:port (nanoclaw drop-in swap pattern).
+func TestExtractLabel(t *testing.T) {
+	basicCred := func(user string) string {
+		return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"))
+	}
+
+	cases := []struct {
+		name    string
+		header  string
+		want    string
+	}{
+		{"no header", "", "default"},
+		{"default label explicit", basicCred("default"), "default"},
+		{"custom label", basicCred("nanoclaw-a"), "nanoclaw-a"},
+		{"URL-credential style (user:empty-pass)", basicCred("myagent"), "myagent"},
+		{"malformed non-basic", "Bearer sometoken", "default"},
+		{"empty username falls back", fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(":"))), "default"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _ := http.NewRequest(http.MethodConnect, "https://api.example.com:443", nil)
+			if tc.header != "" {
+				r.Header.Set("Proxy-Authorization", tc.header)
+			}
+			got := extractLabel(r)
+			if got != tc.want {
+				t.Errorf("extractLabel = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

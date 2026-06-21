@@ -291,14 +291,20 @@ func (p *Proxy) getToken(service, label string) (string, error) {
 
 // extractLabel reads the label from Proxy-Authorization (Basic scheme, username = label).
 // Falls back to "default".
+//
+// HTTP clients that use HTTPS_PROXY=http://label:@proxy:port send the credential as
+// Proxy-Authorization: Basic base64(label:). Go's BasicAuth() reads the Authorization
+// header, so we copy the Proxy-Authorization value into a synthetic Authorization header
+// on a throw-away request to reuse the stdlib base64 decode.
 func extractLabel(r *http.Request) string {
 	auth := r.Header.Get("Proxy-Authorization")
 	if auth == "" {
 		return "default"
 	}
-	// Expect "Basic <base64(label:)>" — username is the label
-	req := &http.Request{Header: r.Header.Clone()}
-	if u, _, ok := req.BasicAuth(); ok && u != "" {
+	// Put the Proxy-Authorization value into Authorization so BasicAuth() can parse it.
+	dummy := &http.Request{Header: make(http.Header)}
+	dummy.Header.Set("Authorization", auth)
+	if u, _, ok := dummy.BasicAuth(); ok && u != "" {
 		return u
 	}
 	return "default"
