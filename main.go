@@ -54,12 +54,22 @@ func runServe(args []string) {
 	principal := fs.String("principal", "", "principal_id (overrides config/env)")
 	control := fs.String("control", "", "control plane URL (overrides config/env)")
 	secret := fs.String("secret", "", "internal secret (overrides config/env)")
-	hardened := fs.Bool("hardened", false, "run in hardened mode: proxy must run as the dedicated oauthr-proxy system user (Unix only; see --help)")
+	hardened := fs.Bool("hardened", false, "run proxy in hardened mode: Job Object sandbox (Windows) or dedicated oauthr-proxy user (Unix)")
 	_ = fs.Parse(args)
 
+	// --hardened: platform-specific isolation.
+	//   Windows: re-exec inside a restricted-token + Job Object sandbox; the child
+	//            sets OAUTHR_SANDBOX_CHILD=1 and skips this block.
+	//   Unix:    validate that the proxy is already running as the oauthr-proxy system
+	//            user; fail with setup instructions if not.
+	// Fail closed on both platforms -- no silent unsandboxed fallback.
 	if *hardened {
-		if ok, msg := hardenedContextOK(); !ok {
-			fail("hardened", msg)
+		exe, err := os.Executable()
+		if err != nil {
+			fail("hardened", fmt.Sprintf("cannot resolve executable path: %v", err))
+		}
+		if done := handleHardenedServe(exe, args); done {
+			return
 		}
 	}
 
@@ -126,7 +136,7 @@ func describe() map[string]any {
 		"kind":    "bridge",
 		"version": version,
 		"verbs":   []string{"init", "principal", "connect", "status", "whoami", "serve", "describe", "doctor", "version"},
-		"notes":   []string{"Phase 2: two-tier join tokens (init, principal token). Phase 3: --hardened (Unix separate-uid proxy isolation), wire/grant/revoke/rotate-key."},
+		"notes":   []string{"Phase 2: two-tier join tokens (init, principal token). Phase 3: wire/grant/revoke/rotate-key."},
 	}
 }
 
