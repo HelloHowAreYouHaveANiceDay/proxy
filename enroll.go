@@ -11,13 +11,19 @@ import (
 	"os"
 )
 
-// runInit implements `oauthr init --enrollment-token <tok>`.
-// Enrolls this agent with the control plane using a join token.
+// runInit implements `oauthr init`.
+// Supports three enrollment modes:
+//   --enrollment-token <tok>  join via a pre-issued token (also OAUTHR_ENROLLMENT_TOKEN)
+//   --browser                 browser loopback + PKCE (RFC 8252, interactive desktop)
+//   --device                  device authorization grant (RFC 8628, headless / SSH / CI)
+//
 // Idempotent: if agent_id + proxy_token are already stored, re-prints them without re-enrolling.
 func runInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	enrollToken := fs.String("enrollment-token", "", "join token (also OAUTHR_ENROLLMENT_TOKEN)")
 	control := fs.String("control", "", "control plane URL (also OAUTHR_CONTROL_URL)")
+	browserFlow := fs.Bool("browser", false, "enroll via browser loopback + PKCE (RFC 8252)")
+	deviceFlow := fs.Bool("device", false, "enroll via device authorization grant (RFC 8628, headless)")
 	_ = fs.Parse(args)
 
 	cfg := loadConfig()
@@ -43,12 +49,22 @@ func runInit(args []string) {
 		return
 	}
 
+	// Dispatch to the appropriate enrollment flow.
+	if *browserFlow {
+		runInitBrowser(cfg)
+		return
+	}
+	if *deviceFlow {
+		runInitDevice(cfg)
+		return
+	}
+
 	tok := *enrollToken
 	if tok == "" {
 		tok = os.Getenv("OAUTHR_ENROLLMENT_TOKEN")
 	}
 	if tok == "" {
-		fail("config", "enrollment token required: use --enrollment-token or OAUTHR_ENROLLMENT_TOKEN")
+		fail("config", "enrollment token required: use --enrollment-token, --browser, or --device (see oauthr init --help)")
 	}
 
 	// Generate a random public key (placeholder for Phase 2; DPoP keypair in Phase 3).
