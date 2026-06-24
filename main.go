@@ -39,6 +39,10 @@ func main() {
 		runConnect(os.Args[2:])
 	case "status":
 		runStatus(os.Args[2:])
+	case "token":
+		runToken(os.Args[2:])
+	case "call":
+		runCall(os.Args[2:])
 	case "whoami":
 		runWhoami()
 	case "doctor":
@@ -135,7 +139,7 @@ func describe() map[string]any {
 		"name":    "oauthr",
 		"kind":    "bridge",
 		"version": version,
-		"verbs":   []string{"init", "principal", "connect", "status", "whoami", "serve", "describe", "doctor", "version"},
+		"verbs":   []string{"init", "principal", "token", "call", "connect", "status", "whoami", "serve", "describe", "doctor", "version"},
 		"notes":   []string{"Phase 2: two-tier join tokens (init, principal token). Phase 3: wire/grant/revoke/rotate-key."},
 	}
 }
