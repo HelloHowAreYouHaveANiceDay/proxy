@@ -10,7 +10,9 @@ import (
 	"os"
 )
 
-const version = "0.2.0"
+// version is the oauthr CLI version. Overridable at release time via
+// -ldflags "-X main.version=<semver>" (see .github/workflows/release.yml).
+var version = "0.2.0"
 
 func main() {
 	if len(os.Args) < 2 {
