@@ -36,16 +36,33 @@ type DiscoveryEntry struct {
 }
 
 // writeDiscovery writes (or overwrites) the instance discovery file.
-func writeDiscovery(proxy, ca string) error {
+// caPath is the filesystem path to the MITM CA; its PEM contents are inlined
+// into the discovery file's "ca" field (the documented contract -- consumers
+// like the bim-linear driver build an x509 pool directly from this field, not
+// from a path).
+func writeDiscovery(proxy, caPath string) error {
 	dir := discoveryDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
+	caPEM := ""
+	if caPath != "" {
+		b, err := os.ReadFile(caPath)
+		if err != nil {
+			return fmt.Errorf("read CA for discovery file: %w", err)
+		}
+		caPEM = string(b)
+	}
 	e := DiscoveryEntry{
-		Driver: "oauthr",
+		// The proxy is generic -- it injects for every registered service
+		// (google, linear, ...), so it advertises an empty driver. Cloud-driver
+		// discovery accepts an instance whose driver is "" (generic) or matches
+		// its own service; advertising a single name (e.g. "oauthr") would make
+		// every service driver skip this proxy.
+		Driver: "",
 		PID:    os.Getpid(),
 		Proxy:  proxy,
-		CA:     ca,
+		CA:     caPEM,
 	}
 	b, _ := json.Marshal(e)
 	return os.WriteFile(discoveryPath(), b, 0644)
@@ -192,8 +209,8 @@ func runStatus(args []string) {
 	if cfg.ControlURL == "" {
 		fail("config", "OAUTHR_CONTROL_URL not set")
 	}
-	if cfg.PrincipalID == "" {
-		fail("config", "OAUTHR_PRINCIPAL_ID not set")
+	if cfg.PrincipalID == "" && cfg.ProxyToken == "" {
+		fail("config", "not enrolled: run `oauthr init` for a proxy_token, or set OAUTHR_PRINCIPAL_ID")
 	}
 
 	service := ""
@@ -204,53 +221,25 @@ func runStatus(args []string) {
 		service = "google"
 	}
 
-	if cfg.InternalSecret == "" {
-		fail("config", "OAUTHR_INTERNAL_SECRET not set (required for status check)")
+	if cfg.ProxyToken == "" && cfg.InternalSecret == "" {
+		fail("config", "no control-plane credential: run `oauthr init` for a proxy_token, or set OAUTHR_INTERNAL_SECRET")
 	}
 
-	// Use /v1/internal/token to verify credential is present and refreshable
-	body, _ := json.Marshal(map[string]string{
-		"principal_id": cfg.PrincipalID,
-		"service":      service,
-		"label":        *label,
-	})
-	req, _ := http.NewRequest(http.MethodPost, cfg.ControlURL+"/v1/internal/token", strings.NewReader(string(body)))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Secret", cfg.InternalSecret)
-
-	resp, err := http.DefaultClient.Do(req)
+	// A successful token mint proves the credential is present and refreshable.
+	res, err := fetchToken(cfg, service, *label)
 	if err != nil {
-		fail("network", fmt.Sprintf("POST /v1/internal/token: %v", err))
-	}
-	defer resp.Body.Close()
-
-	var tr struct {
-		OK     bool `json:"ok"`
-		Result struct {
-			AccessToken string `json:"access_token"`
-			ExpiresAt   int64  `json:"expires_at"`
-		} `json:"result"`
-		Error struct {
-			Kind    string `json:"kind"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&tr)
-
-	if tr.OK {
-		emit(map[string]any{
-			"ok": true,
-			"result": map[string]any{
-				"status":       "connected",
-				"service":      service,
-				"label":        *label,
-				"principal_id": cfg.PrincipalID,
-				"expires_at":   tr.Result.ExpiresAt,
-			},
-		})
-	} else {
 		os.Exit(3) // exit code 3 = not-connected (SPEC §11)
 	}
+	emit(map[string]any{
+		"ok": true,
+		"result": map[string]any{
+			"status":       "connected",
+			"service":      service,
+			"label":        *label,
+			"principal_id": cfg.PrincipalID,
+			"expires_at":   res.ExpiresAt,
+		},
+	})
 }
 
 // runWhoami implements `oauthr whoami`.
@@ -275,8 +264,11 @@ func runDoctor() {
 	checks := []map[string]any{}
 
 	checks = append(checks, checkField("control_url", cfg.ControlURL != "", "set OAUTHR_CONTROL_URL or add control_url to ~/.oauthr/config.json"))
-	checks = append(checks, checkField("principal_id", cfg.PrincipalID != "", "run `oauthr init` to enroll"))
-	checks = append(checks, checkField("internal_secret", cfg.InternalSecret != "", "set OAUTHR_INTERNAL_SECRET (proxy secret)"))
+	// Capability-first: a proxy_token authenticates and scopes on its own. The
+	// principal_id + internal-secret pair is the legacy fallback. The broker is
+	// healthy if either credential is present.
+	hasCapability := cfg.ProxyToken != "" || (cfg.PrincipalID != "" && cfg.InternalSecret != "")
+	checks = append(checks, checkField("credential", hasCapability, "run `oauthr init` to enroll (proxy_token), or set OAUTHR_PRINCIPAL_ID + OAUTHR_INTERNAL_SECRET"))
 
 	// Reachability
 	if cfg.ControlURL != "" {

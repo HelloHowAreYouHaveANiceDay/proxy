@@ -26,6 +26,8 @@ var builtinServicePatterns = []servicePattern{
 	{"*.googleapis.com", "google"},
 	{"oauth2.googleapis.com", "google"},
 	{"accounts.google.com", "google"},
+	// Linear
+	{"api.linear.app", "linear"},
 	// Dropbox
 	{"api.dropboxapi.com", "dropbox"},
 	// Box
@@ -112,6 +114,16 @@ func (p *Proxy) matchService(host string) string {
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Liveness probe: a direct (non-proxied) GET /healthz returns 200 so clients
+	// (e.g. the bim-linear driver) can confirm the proxy is up before routing
+	// HTTPS through it. Proxied requests use absolute-form request URIs
+	// (r.URL.IsAbs()), so this never shadows a real upstream /healthz.
+	if r.Method == http.MethodGet && !r.URL.IsAbs() && r.URL.Path == "/healthz" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+		return
+	}
 	if r.Method == http.MethodConnect {
 		p.handleCONNECT(w, r)
 		return
@@ -276,7 +288,12 @@ func (p *Proxy) getToken(service, label string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Secret", p.cfg.InternalSecret)
+	// Only the legacy principal_id path needs the internal secret; when a
+	// proxy_token capability is present it authenticates on its own, so we omit
+	// the vault-wide secret entirely.
+	if p.cfg.InternalSecret != "" {
+		req.Header.Set("X-Internal-Secret", p.cfg.InternalSecret)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

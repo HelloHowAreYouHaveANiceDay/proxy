@@ -39,7 +39,12 @@ func fetchToken(cfg ProxyConfig, service, label string) (*tokenResult, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Internal-Secret", cfg.InternalSecret)
+	// Capability-first: a proxy_token authenticates on its own. Only the legacy
+	// principal_id path needs the vault-wide internal secret, so we send the
+	// header only when one is configured.
+	if cfg.InternalSecret != "" {
+		req.Header.Set("X-Internal-Secret", cfg.InternalSecret)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -66,8 +71,13 @@ func fetchToken(cfg ProxyConfig, service, label string) (*tokenResult, error) {
 }
 
 // runToken implements `oauthr token <service> [--label <label>]`.
-// Fetches a short-lived access token via the trusted-local internal path and emits it as JSON.
-// Requires internal_secret in config (sidecar/trusted-local context); agents never hold it.
+//
+// This is the reference credential path for cloud drivers (the simplest secure
+// model): mint a short-lived, scoped access token and emit it as JSON. The driver
+// then sets Authorization: Bearer and calls the provider API directly -- no MITM
+// proxy, no resident daemon. Capability-first: a proxy_token (from `oauthr init`)
+// authenticates on its own, so the durable refresh token never leaves the vault
+// and the master admin secret never touches the machine.
 func runToken(args []string) {
 	fs := flag.NewFlagSet("token", flag.ExitOnError)
 	label := fs.String("label", "default", "credential slot label")
@@ -82,8 +92,8 @@ func runToken(args []string) {
 	if cfg.ControlURL == "" {
 		fail("config", "OAUTHR_CONTROL_URL not set")
 	}
-	if cfg.InternalSecret == "" {
-		fail("config", "internal_secret not set -- start `oauthr serve` in a trusted-local context or set OAUTHR_INTERNAL_SECRET")
+	if cfg.ProxyToken == "" && cfg.InternalSecret == "" {
+		fail("config", "no control-plane credential: run `oauthr init` for a proxy_token, or set OAUTHR_INTERNAL_SECRET")
 	}
 	if cfg.ProxyToken == "" && cfg.PrincipalID == "" {
 		fail("config", "not enrolled -- run `oauthr init` first")

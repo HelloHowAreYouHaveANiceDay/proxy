@@ -98,11 +98,17 @@ func runServe(args []string) {
 	if cfg.ControlURL == "" {
 		fail("config", "control URL required: set OAUTHR_CONTROL_URL or --control flag")
 	}
-	if cfg.PrincipalID == "" {
-		fail("config", "principal ID required: set OAUTHR_PRINCIPAL_ID or --principal flag")
-	}
-	if cfg.InternalSecret == "" {
-		fail("config", "internal secret required: set OAUTHR_INTERNAL_SECRET or --secret flag")
+	// Control-plane auth is capability-first. A proxy_token (from `oauthr init`)
+	// authenticates and scopes the sidecar on its own -- no principal_id or
+	// vault-wide internal secret needed. The legacy path uses principal_id +
+	// internal secret.
+	if cfg.ProxyToken == "" {
+		if cfg.PrincipalID == "" {
+			fail("config", "no control-plane credential: run `oauthr init` for a proxy_token, or set OAUTHR_PRINCIPAL_ID")
+		}
+		if cfg.InternalSecret == "" {
+			fail("config", "principal_id path needs the internal secret: set OAUTHR_INTERNAL_SECRET, or run `oauthr init` for a proxy_token")
+		}
 	}
 
 	ca, err := loadOrCreateCA(cfg.DataDir)
