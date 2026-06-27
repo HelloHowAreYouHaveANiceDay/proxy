@@ -14,7 +14,7 @@ const version = "0.2.0"
 
 func main() {
 	if len(os.Args) < 2 {
-		fail("usage", "oauthr <verb> (init|serve|connect|status|whoami|principal|describe|doctor|version|...)")
+		fail("usage", "oauthr <verb> (init|serve|run|connect|status|whoami|principal|describe|doctor|version|...)")
 	}
 	switch os.Args[1] {
 	case "version":
@@ -35,6 +35,8 @@ func main() {
 		}
 	case "serve":
 		runServe(os.Args[2:])
+	case "run":
+		runRun(os.Args[2:])
 	case "connect":
 		runConnect(os.Args[2:])
 	case "status":
@@ -139,7 +141,7 @@ func describe() map[string]any {
 		"name":    "oauthr",
 		"kind":    "bridge",
 		"version": version,
-		"verbs":   []string{"init", "principal", "token", "call", "connect", "status", "whoami", "serve", "describe", "doctor", "version"},
+		"verbs":   []string{"init", "principal", "token", "call", "connect", "status", "whoami", "serve", "run", "describe", "doctor", "version"},
 		"notes":   []string{"Phase 2: two-tier join tokens (init, principal token). Phase 3: wire/grant/revoke/rotate-key."},
 	}
 }
