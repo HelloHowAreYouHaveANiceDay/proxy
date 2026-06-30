@@ -349,23 +349,22 @@ func (p *Proxy) getToken(service, label string) (string, error) {
 	}
 	p.mu.Unlock()
 
-	// Fetch from control plane.
-	// Phase 2: prefer proxy_token (agent leash); fall back to principal_id for backward compat.
-	tokenReqBody := map[string]string{"service": service, "label": label}
-	if p.cfg.ProxyToken != "" {
-		tokenReqBody["proxy_token"] = p.cfg.ProxyToken
-	} else {
-		tokenReqBody["principal_id"] = p.cfg.PrincipalID
+	// The new control plane requires proxy_token in the request body.
+	// PrincipalID-only (Phase 1) is rejected by the server; callers must enroll
+	// via `oauthr init` to obtain a proxy_token before token minting works.
+	if p.cfg.ProxyToken == "" {
+		return "", fmt.Errorf("proxy_token not configured: run `oauthr init` to enroll")
 	}
+	tokenReqBody := map[string]string{"service": service, "label": label, "proxy_token": p.cfg.ProxyToken}
 	body, _ := json.Marshal(tokenReqBody)
 	req, err := http.NewRequest(http.MethodPost, p.cfg.ControlURL+"/v1/internal/token", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	// Only the legacy principal_id path needs the internal secret; when a
-	// proxy_token capability is present it authenticates on its own, so we omit
-	// the vault-wide secret entirely.
+	// X-Internal-Secret is the shared transport credential. Only send it when
+	// explicitly configured; ProxyToken is a per-agent capability token and must
+	// never be used as a substitute for the shared secret.
 	if p.cfg.InternalSecret != "" {
 		req.Header.Set("X-Internal-Secret", p.cfg.InternalSecret)
 	}

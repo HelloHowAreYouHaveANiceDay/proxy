@@ -31,9 +31,8 @@ func TestGetTokenFlat(t *testing.T) {
 	defer srv.Close()
 
 	p := newProxy(ProxyConfig{
-		ControlURL:     srv.URL,
-		InternalSecret: "secret",
-		PrincipalID:    "p1",
+		ControlURL: srv.URL,
+		ProxyToken: "pt.test",
 	}, nil)
 
 	got, err := p.getToken("google", "default")
@@ -64,7 +63,7 @@ func TestGetTokenCached(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newProxy(ProxyConfig{ControlURL: srv.URL, PrincipalID: "p1"}, nil)
+	p := newProxy(ProxyConfig{ControlURL: srv.URL, ProxyToken: "pt.test"}, nil)
 
 	if _, err := p.getToken("google", "default"); err != nil {
 		t.Fatalf("first getToken: %v", err)
@@ -88,7 +87,7 @@ func TestGetTokenControlPlaneError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := newProxy(ProxyConfig{ControlURL: srv.URL, PrincipalID: "p1"}, nil)
+	p := newProxy(ProxyConfig{ControlURL: srv.URL, ProxyToken: "pt.test"}, nil)
 
 	_, err := p.getToken("google", "default")
 	if err == nil {
@@ -222,5 +221,79 @@ func TestExtractLabel(t *testing.T) {
 				t.Errorf("extractLabel = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestGetTokenInternalSecretHeader verifies X-Internal-Secret header behavior on token mint:
+// only the explicit InternalSecret is sent; ProxyToken must never be used as a substitute.
+func TestGetTokenInternalSecretHeader(t *testing.T) {
+	cases := []struct {
+		name           string
+		internalSecret string
+		proxyToken     string
+		wantSecret     string
+	}{
+		{
+			name:           "InternalSecret set -- sent as X-Internal-Secret",
+			internalSecret: "vault-secret",
+			proxyToken:     "pt.abc123",
+			wantSecret:     "vault-secret",
+		},
+		{
+			name:       "proxy_token only -- no X-Internal-Secret header sent",
+			proxyToken: "pt.abc123",
+			wantSecret: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotSecret string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/v1/internal/token" {
+					// Only capture secret from token-mint calls; the service-pattern
+					// refresher goroutine hits /v1/internal/services without this header.
+					gotSecret = r.Header.Get("X-Internal-Secret")
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"ok":           true,
+						"access_token": "tok",
+						"expires_at":   time.Now().Add(time.Hour).Unix(),
+					})
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "services": []interface{}{}})
+			}))
+			defer srv.Close()
+
+			p := newProxy(ProxyConfig{
+				ControlURL:     srv.URL,
+				InternalSecret: tc.internalSecret,
+				ProxyToken:     tc.proxyToken,
+			}, nil)
+
+			if _, err := p.getToken("google", "default"); err != nil {
+				t.Fatalf("getToken: %v", err)
+			}
+			if gotSecret != tc.wantSecret {
+				t.Errorf("X-Internal-Secret = %q, want %q", gotSecret, tc.wantSecret)
+			}
+		})
+	}
+}
+
+// TestGetTokenNoProxyToken verifies that getToken returns an error immediately
+// when proxy_token is not configured, rather than making a doomed request.
+func TestGetTokenNoProxyToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("unexpected request to control plane: proxy_token is required")
+		http.Error(w, "unexpected", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	p := newProxy(ProxyConfig{ControlURL: srv.URL, InternalSecret: "s"}, nil)
+	_, err := p.getToken("google", "default")
+	if err == nil {
+		t.Fatal("expected error when proxy_token is empty, got nil")
 	}
 }

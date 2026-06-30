@@ -33,6 +33,12 @@ type DiscoveryEntry struct {
 	PID    int    `json:"pid"`
 	Proxy  string `json:"proxy"`
 	CA     string `json:"ca"`
+	// CATrusted reports whether the oauthr CA is installed in the OS trust store.
+	// On Windows a driver that delegates HTTPS to a child process (e.g. bim-google's
+	// gws.exe, which uses Go's OS-backed verifier) can only route through the proxy
+	// when this is true; otherwise it must fall back to a local credential. Always
+	// true on non-Windows, where SSL_CERT_FILE / an explicit CA pool suffices.
+	CATrusted bool `json:"ca_trusted"`
 }
 
 // writeDiscovery writes (or overwrites) the instance discovery file.
@@ -40,7 +46,7 @@ type DiscoveryEntry struct {
 // into the discovery file's "ca" field (the documented contract -- consumers
 // like the bim-linear driver build an x509 pool directly from this field, not
 // from a path).
-func writeDiscovery(proxy, caPath string) error {
+func writeDiscovery(proxy, caPath string, caTrusted bool) error {
 	dir := discoveryDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -59,10 +65,11 @@ func writeDiscovery(proxy, caPath string) error {
 		// discovery accepts an instance whose driver is "" (generic) or matches
 		// its own service; advertising a single name (e.g. "oauthr") would make
 		// every service driver skip this proxy.
-		Driver: "",
-		PID:    os.Getpid(),
-		Proxy:  proxy,
-		CA:     caPEM,
+		Driver:    "",
+		PID:       os.Getpid(),
+		Proxy:     proxy,
+		CA:        caPEM,
+		CATrusted: caTrusted,
 	}
 	b, _ := json.Marshal(e)
 	return os.WriteFile(discoveryPath(), b, 0644)
@@ -137,13 +144,13 @@ func runConnect(args []string) {
 	}
 	defer resp.Body.Close()
 
+	// The control plane returns session_id + consent_url at the TOP LEVEL (not nested
+	// under "result", and the field is consent_url, not auth_url) -- match it exactly.
 	var sr struct {
-		OK     bool `json:"ok"`
-		Result struct {
-			SessionID string `json:"session_id"`
-			AuthURL   string `json:"auth_url"`
-		} `json:"result"`
-		Error struct {
+		OK         bool   `json:"ok"`
+		SessionID  string `json:"session_id"`
+		ConsentURL string `json:"consent_url"`
+		Error      struct {
 			Kind    string `json:"kind"`
 			Message string `json:"message"`
 		} `json:"error"`
@@ -156,13 +163,13 @@ func runConnect(args []string) {
 	}
 
 	// Surface consent URL to the caller (human or orchestrator)
-	fmt.Fprintf(os.Stderr, "Open this URL in your browser to authorize %s:\n\n  %s\n\nWaiting for authorization...\n", service, sr.Result.AuthURL)
+	fmt.Fprintf(os.Stderr, "Open this URL in your browser to authorize %s:\n\n  %s\n\nWaiting for authorization...\n", service, sr.ConsentURL)
 	emit(map[string]any{
 		"ok": true,
 		"result": map[string]any{
-			"status":     "pending",
-			"consent_url": sr.Result.AuthURL,
-			"session_id": sr.Result.SessionID,
+			"status":      "pending",
+			"consent_url": sr.ConsentURL,
+			"session_id":  sr.SessionID,
 		},
 	})
 
@@ -171,7 +178,7 @@ func runConnect(args []string) {
 	for time.Now().Before(deadline) {
 		time.Sleep(2 * time.Second)
 
-		pollResp, err := http.Get(cfg.ControlURL + "/v1/auth/sessions/" + sr.Result.SessionID) //nolint:gosec
+		pollResp, err := http.Get(cfg.ControlURL + "/v1/auth/sessions/" + sr.SessionID) //nolint:gosec
 		if err != nil {
 			continue
 		}

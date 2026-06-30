@@ -83,6 +83,7 @@ func (m *mockOAuthServer) handleToken(w http.ResponseWriter, r *http.Request) {
 type mockCtrl struct {
 	mu          sync.Mutex
 	principals  map[string]bool
+	proxyTokens map[string]string // proxy_token -> principal_id
 	services    map[string]mockSvc
 	sessions    map[string]mockSess
 	credentials map[string]string // "pid/svc/label" -> refresh_token
@@ -111,6 +112,7 @@ func newMockCtrl(t *testing.T, adminSecret string) *mockCtrl {
 	c := &mockCtrl{
 		adminSecret: adminSecret,
 		principals:  make(map[string]bool),
+		proxyTokens: make(map[string]string),
 		services:    make(map[string]mockSvc),
 		sessions:    make(map[string]mockSess),
 		credentials: make(map[string]string),
@@ -148,10 +150,12 @@ func (c *mockCtrl) handleAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pid := fmt.Sprintf("pid-%d", time.Now().UnixNano())
+	pt := fmt.Sprintf("pt.%d", time.Now().UnixNano())
 	c.mu.Lock()
 	c.principals[pid] = true
+	c.proxyTokens[pt] = pid
 	c.mu.Unlock()
-	c.jsonOK(w, map[string]any{"ok": true, "principal_id": pid}, http.StatusCreated)
+	c.jsonOK(w, map[string]any{"ok": true, "principal_id": pid, "proxy_token": pt}, http.StatusCreated)
 }
 
 func (c *mockCtrl) handleServices(w http.ResponseWriter, r *http.Request) {
@@ -279,16 +283,24 @@ func (c *mockCtrl) handleInternalToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		PrincipalID string `json:"principal_id"`
-		Service     string `json:"service"`
-		Label       string `json:"label"`
+		ProxyToken string `json:"proxy_token"`
+		Service    string `json:"service"`
+		Label      string `json:"label"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if body.Label == "" {
 		body.Label = "default"
 	}
 
-	credKey := body.PrincipalID + "/" + body.Service + "/" + body.Label
+	c.mu.Lock()
+	pid := c.proxyTokens[body.ProxyToken]
+	c.mu.Unlock()
+	if pid == "" {
+		c.jsonErr(w, "unauthorized", "unknown proxy_token", http.StatusUnauthorized)
+		return
+	}
+
+	credKey := pid + "/" + body.Service + "/" + body.Label
 	c.mu.Lock()
 	rt, ok := c.credentials[credKey]
 	svc := c.services[body.Service]
@@ -407,12 +419,14 @@ func TestE2E_InjectionLoop(t *testing.T) {
 	}
 	var enrollResult struct {
 		PrincipalID string `json:"principal_id"`
+		ProxyToken  string `json:"proxy_token"`
 	}
 	_ = json.NewDecoder(enrollResp.Body).Decode(&enrollResult)
 	enrollResp.Body.Close()
 	pid := enrollResult.PrincipalID
-	if pid == "" {
-		t.Fatal("enroll returned empty principal_id")
+	proxyToken := enrollResult.ProxyToken
+	if pid == "" || proxyToken == "" {
+		t.Fatal("enroll returned empty principal_id or proxy_token")
 	}
 
 	// 4. Start a PKCE connect session.
@@ -463,7 +477,7 @@ func TestE2E_InjectionLoop(t *testing.T) {
 	cfg := ProxyConfig{
 		ControlURL:     ctrl.srv.URL,
 		InternalSecret: adminSecret,
-		PrincipalID:    pid,
+		ProxyToken:     proxyToken,
 		Port:           0,
 		DataDir:        dataDir,
 	}

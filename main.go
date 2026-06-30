@@ -12,7 +12,7 @@ import (
 
 // version is the oauthr CLI version. Overridable at release time via
 // -ldflags "-X main.version=<semver>" (see .github/workflows/release.yml).
-var version = "0.2.0"
+var version = "0.3.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -37,6 +37,8 @@ func main() {
 		}
 	case "serve":
 		runServe(os.Args[2:])
+	case "trust-ca":
+		runTrustCA(os.Args[2:])
 	case "run":
 		runRun(os.Args[2:])
 	case "connect":
@@ -121,8 +123,13 @@ func runServe(args []string) {
 	caPath := cfg.DataDir + "/ca.crt"
 	p := newProxy(cfg, ca)
 
+	// On Windows, a child process that uses Go's OS-backed verifier (gws.exe) can only
+	// trust the MITM CA if it is installed in the OS store. Surface that state so drivers
+	// can choose the proxy path vs. a local-credential fallback. (Always true off Windows.)
+	caTrusted := caCertTrusted(ca.cert.Raw)
+
 	// Write bim-cli instance discovery file; clean up on exit
-	if err := writeDiscovery(proxyURL, caPath); err != nil {
+	if err := writeDiscovery(proxyURL, caPath, caTrusted); err != nil {
 		fail("discovery", fmt.Sprintf("failed to write discovery file: %v", err))
 	}
 	defer removeDiscovery()
@@ -131,15 +138,39 @@ func runServe(args []string) {
 	emit(map[string]any{
 		"ok": true,
 		"result": map[string]any{
-			"proxy": proxyURL,
-			"ca":    caPath,
-			"pid":   os.Getpid(),
+			"proxy":      proxyURL,
+			"ca":         caPath,
+			"pid":        os.Getpid(),
+			"ca_trusted": caTrusted,
 		},
 	})
 
 	if err := http.ListenAndServe(addr, p); err != nil {
 		fail("serve", err.Error())
 	}
+}
+
+// runTrustCA installs the oauthr CA into the OS trust store so child processes that use
+// the OS certificate verifier (notably bim-google's gws.exe on Windows) trust the proxy's
+// MITM certs. On Windows it adds the CA to the CurrentUser "Root" store -- no admin rights.
+// Idempotent. On non-Windows it is a no-op (SSL_CERT_FILE / explicit CA pools suffice).
+func runTrustCA(args []string) {
+	fs := flag.NewFlagSet("trust-ca", flag.ExitOnError)
+	_ = fs.Parse(args)
+
+	cfg := loadConfig()
+	ca, err := loadOrCreateCA(cfg.DataDir)
+	if err != nil {
+		fail("ca", fmt.Sprintf("failed to load/create CA: %v", err))
+	}
+	if caCertTrusted(ca.cert.Raw) {
+		emit(map[string]any{"ok": true, "result": map[string]any{"trusted": true, "changed": false, "store": trustCAStoreName()}})
+		return
+	}
+	if err := installCACert(ca.cert.Raw); err != nil {
+		fail("trust-ca", fmt.Sprintf("failed to install CA into trust store: %v", err))
+	}
+	emit(map[string]any{"ok": true, "result": map[string]any{"trusted": true, "changed": true, "store": trustCAStoreName()}})
 }
 
 // describe follows the bim-cli driver protocol. oauthr is a bridge-kind driver:
@@ -149,7 +180,7 @@ func describe() map[string]any {
 		"name":    "oauthr",
 		"kind":    "bridge",
 		"version": version,
-		"verbs":   []string{"init", "principal", "token", "call", "connect", "status", "whoami", "serve", "run", "describe", "doctor", "version"},
+		"verbs":   []string{"init", "principal", "token", "call", "connect", "status", "whoami", "serve", "run", "trust-ca", "describe", "doctor", "version"},
 		"notes":   []string{"Phase 2: two-tier join tokens (init, principal token). Phase 3: wire/grant/revoke/rotate-key."},
 	}
 }
