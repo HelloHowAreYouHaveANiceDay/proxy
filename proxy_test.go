@@ -49,8 +49,13 @@ func TestGetTokenFlat(t *testing.T) {
 func TestGetTokenCached(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/internal/services" {
+			// Respond to the background service-pattern refresher; don't count it as a token call.
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "services": []interface{}{}})
+			return
+		}
+		calls++
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"ok":           true,
 			"access_token": "cached-tok",
@@ -127,6 +132,54 @@ func TestMatchServiceBuiltin(t *testing.T) {
 		{"myshop.myshopify.com:443", "shopify"},
 		{"another-store.myshopify.com:443", "shopify"},
 		// Unknown host -- should return empty string (pass-through)
+		{"unknown.example.com:443", ""},
+	}
+	for _, tc := range cases {
+		got := p.matchService(tc.host)
+		if got != tc.service {
+			t.Errorf("matchService(%q) = %q, want %q", tc.host, got, tc.service)
+		}
+	}
+}
+
+// TestRefreshServicePatterns verifies that the proxy fetches host_patterns from the control plane
+// and uses them in matchService, enabling new services to work without a proxy rebuild.
+func TestRefreshServicePatterns(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/internal/services" || r.Method != http.MethodGet {
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok": true,
+			"services": []map[string]string{
+				{"service": "acme", "host_patterns": "api.acme.example.com *.acme.example.com"},
+				{"service": "beta", "host_patterns": "api.beta.test"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	p := newProxy(ProxyConfig{
+		ControlURL:     srv.URL,
+		InternalSecret: "secret",
+		PrincipalID:    "p1",
+	}, nil)
+
+	// newProxy launches the refresher goroutine; call directly to avoid timing dependency.
+	p.refreshServicePatterns()
+
+	cases := []struct {
+		host    string
+		service string
+	}{
+		{"api.acme.example.com:443", "acme"},
+		{"sub.acme.example.com:443", "acme"},
+		{"api.beta.test:443", "beta"},
+		// builtin still works
+		{"api.stripe.com:443", "stripe"},
+		// unknown
 		{"unknown.example.com:443", ""},
 	}
 	for _, tc := range cases {

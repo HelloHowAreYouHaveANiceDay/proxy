@@ -68,6 +68,9 @@ type tokenEntry struct {
 	expiresAt   int64 // unix seconds
 }
 
+// cpPatternsTTL is how often the proxy re-fetches service patterns from the control plane.
+const cpPatternsTTL = 5 * time.Minute
+
 // Proxy is the injecting MITM proxy.
 type Proxy struct {
 	cfg          ProxyConfig
@@ -79,15 +82,78 @@ type Proxy struct {
 
 	mu     sync.Mutex
 	tokens map[string]tokenEntry // key: "service/label"
+
+	cpMu      sync.RWMutex
+	cpPatterns []servicePattern // fetched from control plane; refreshed every cpPatternsTTL
 }
 
 func newProxy(cfg ProxyConfig, ca *CA) *Proxy {
-	return &Proxy{
+	p := &Proxy{
 		cfg:          cfg,
 		ca:           ca,
 		tokens:       make(map[string]tokenEntry),
 		dialUpstream: defaultDialUpstream,
 	}
+	if cfg.ControlURL != "" {
+		go p.runServicePatternRefresher()
+	}
+	return p
+}
+
+// runServicePatternRefresher fetches service host_patterns from the control plane at startup
+// and refreshes them every cpPatternsTTL so new services registered via PUT /v1/admin/services
+// are picked up without a proxy restart or rebuild.
+func (p *Proxy) runServicePatternRefresher() {
+	for {
+		p.refreshServicePatterns()
+		time.Sleep(cpPatternsTTL)
+	}
+}
+
+// refreshServicePatterns fetches the current service list from the control plane and updates
+// cpPatterns. A failed fetch is silently ignored; the previous cpPatterns (or an empty slice)
+// remain in effect and builtinServicePatterns still cover the built-in providers.
+func (p *Proxy) refreshServicePatterns() {
+	req, err := http.NewRequest(http.MethodGet, p.cfg.ControlURL+"/v1/internal/services", nil)
+	if err != nil {
+		return
+	}
+	if p.cfg.ProxyToken != "" {
+		req.Header.Set("Authorization", "Bearer "+p.cfg.ProxyToken)
+	} else if p.cfg.InternalSecret != "" {
+		req.Header.Set("X-Internal-Secret", p.cfg.InternalSecret)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+
+	var result struct {
+		OK       bool `json:"ok"`
+		Services []struct {
+			Service      string `json:"service"`
+			HostPatterns string `json:"host_patterns"`
+		} `json:"services"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || !result.OK {
+		return
+	}
+
+	patterns := make([]servicePattern, 0)
+	for _, s := range result.Services {
+		for _, pat := range strings.Fields(s.HostPatterns) {
+			patterns = append(patterns, servicePattern{pattern: pat, service: s.Service})
+		}
+	}
+
+	p.cpMu.Lock()
+	p.cpPatterns = patterns
+	p.cpMu.Unlock()
 }
 
 func defaultDialUpstream(network, addr string, cfg *tls.Config) (net.Conn, error) {
@@ -95,12 +161,21 @@ func defaultDialUpstream(network, addr string, cfg *tls.Config) (net.Conn, error
 }
 
 // matchService maps host (with optional port) to a service name.
+// Priority: extraPatterns (test injection) > cpPatterns (control plane) > builtinServicePatterns.
 func (p *Proxy) matchService(host string) string {
 	h := host
 	if idx := strings.LastIndex(h, ":"); idx != -1 {
 		h = h[:idx]
 	}
 	for _, sp := range p.extraPatterns {
+		if matchPattern(sp.pattern, h) {
+			return sp.service
+		}
+	}
+	p.cpMu.RLock()
+	cp := p.cpPatterns
+	p.cpMu.RUnlock()
+	for _, sp := range cp {
 		if matchPattern(sp.pattern, h) {
 			return sp.service
 		}
