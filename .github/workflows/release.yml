@@ -1,0 +1,46 @@
+name: release
+
+# Tag-triggered release: builds bim-oauthr.exe (the bim-cli driver binary) and
+# publishes it as bim-oauthr-windows-amd64.zip on a GitHub Release. bim-cli's
+# release pipeline fetches this asset by the `bim-oauthr` pin in driver-pins.json
+# and vendors it into drivers/.
+#
+# NOTE: after this repo (proxy) first cuts a v* release, repoint bim-cli's
+# driver-pins.json `bim-oauthr.repo` from HelloHowAreYouHaveANiceDay/oauthr to
+# HelloHowAreYouHaveANiceDay/proxy. Asset name is unchanged so the pin pattern
+# still matches.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: build
+        env:
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          go build -ldflags "-X main.version=${VERSION}" -o bim-oauthr.exe .
+
+      - name: package
+        run: |
+          mkdir stage
+          cp bim-oauthr.exe stage/
+          cd stage && zip -r ../bim-oauthr-windows-amd64.zip .
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: bim-oauthr-windows-amd64.zip
