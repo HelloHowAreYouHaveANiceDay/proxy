@@ -6,7 +6,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/HelloHowAreYouHaveANiceDay/oauthr/cli/internal/sandbox"
+	"github.com/HelloHowAreYouHaveANiceDay/proxy/internal/sandbox"
 )
 
 // runRun implements "oauthr run [--hardened] <command> [args...]".

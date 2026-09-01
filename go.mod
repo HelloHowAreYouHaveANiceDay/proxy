@@ -1,3 +1,3 @@
-module github.com/HelloHowAreYouHaveANiceDay/oauthr/cli
+module github.com/HelloHowAreYouHaveANiceDay/proxy
 
 go 1.23
